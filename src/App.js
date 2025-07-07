@@ -11,6 +11,7 @@ import {
   Upload,
   FileSpreadsheet,
   AlertCircle,
+  PieChart,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -301,6 +302,7 @@ const EmployeeAvailabilityDashboard = () => {
           category: record.category,
         });
 
+        // CRITICAL: Categorize hours correctly
         if (record.category === "chargeable")
           employees[empKey].chargeableHours += record.hoursPerDay;
         else if (record.category === "absence" || record.category === "loa")
@@ -313,6 +315,7 @@ const EmployeeAvailabilityDashboard = () => {
       }
     });
 
+    // CRITICAL: Calculate true utilization rates correctly
     Object.values(employees).forEach((emp) => {
       emp.projectCount = emp.projects.size;
       emp.assignments.sort(
@@ -334,11 +337,16 @@ const EmployeeAvailabilityDashboard = () => {
       const avgDailyAbsenceHours =
         emp.absenceHours / Math.max(totalAssignmentDays, 1);
 
+      // Net available hours = 8 hours per day minus absence hours
       emp.netAvailableHours = Math.max(0, 8 - avgDailyAbsenceHours);
+      
+      // Available capacity = net available minus chargeable
       emp.availableCapacityHours = Math.max(
         0,
         emp.netAvailableHours - avgDailyChargeableHours
       );
+      
+      // True utilization = chargeable hours / net available hours
       emp.trueUtilizationRate =
         emp.netAvailableHours > 0
           ? (avgDailyChargeableHours / emp.netAvailableHours) * 100
@@ -417,7 +425,7 @@ const EmployeeAvailabilityDashboard = () => {
 
     const workingDate = new Date(timelineStart);
     while (workingDate <= timelineEnd) {
-      // Exclude weekends AND public holidays from working days
+      // CRITICAL: Exclude weekends AND public holidays from working days
       if (
         workingDate.getDay() !== 0 &&
         workingDate.getDay() !== 6 &&
@@ -433,7 +441,7 @@ const EmployeeAvailabilityDashboard = () => {
           const endDate = new Date(assignment.endDate);
           const currentDay = new Date(dateStr);
 
-          // Fixed: Include end date properly
+          // CRITICAL: Include end date properly (<=)
           if (currentDay >= startDate && currentDay <= endDate) {
             const hoursForThisDay = assignment.hoursPerDay || 0;
             if (assignment.category === "chargeable")
@@ -858,7 +866,7 @@ const EmployeeAvailabilityDashboard = () => {
                 0%
               </div>
 
-              {/* Public holidays background - similar to weekends but different color */}
+              {/* Public holidays background */}
               {(() => {
                 const holidayAreas = [];
                 const { startDate, endDate } = getTimelineRange();
@@ -902,7 +910,7 @@ const EmployeeAvailabilityDashboard = () => {
                 return holidayAreas;
               })()}
 
-              {/* Weekend background - subtle */}
+              {/* Weekend background */}
               {(() => {
                 const weekendAreas = [];
                 const { startDate, endDate } = getTimelineRange();
@@ -911,13 +919,11 @@ const EmployeeAvailabilityDashboard = () => {
                 while (currentDate <= endDate) {
                   const dayOfWeek = currentDate.getDay();
                   if (dayOfWeek === 0 || dayOfWeek === 6) {
-                    // Sunday or Saturday
                     const centerX = getPositionFromDate(
                       currentDate.toISOString().split("T")[0],
                       timelineStart,
                       timelineEnd
                     );
-                    // Calculate approximate day width (assuming roughly equal spacing)
                     const totalDays =
                       (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
                     const dayWidth = 100 / totalDays;
@@ -947,7 +953,7 @@ const EmployeeAvailabilityDashboard = () => {
                 return weekendAreas;
               })()}
 
-              {/* Days off (holidays/absence) - simple orange */}
+              {/* Days off (holidays/absence) */}
               {timelineData.dailyUtilization &&
                 timelineData.dailyUtilization.map((day, index) => {
                   if (day.netAvailableHours === 0) {
@@ -956,7 +962,6 @@ const EmployeeAvailabilityDashboard = () => {
                       timelineStart,
                       timelineEnd
                     );
-                    // Calculate approximate day width
                     const totalDays =
                       (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
                     const dayWidth = 100 / totalDays;
@@ -980,7 +985,7 @@ const EmployeeAvailabilityDashboard = () => {
                   return null;
                 })}
 
-              {/* Curve using SVG */}
+              {/* SVG curve for utilization */}
               {timelineData.dailyUtilization &&
                 timelineData.dailyUtilization.length > 1 && (
                   <svg
@@ -1010,7 +1015,7 @@ const EmployeeAvailabilityDashboard = () => {
                       </linearGradient>
                     </defs>
 
-                    {/* Create step curve path only for available periods */}
+                    {/* Utilization curve path */}
                     <path
                       d={(() => {
                         const availablePoints = timelineData.dailyUtilization
@@ -1032,189 +1037,49 @@ const EmployeeAvailabilityDashboard = () => {
                           ((timelineEnd - timelineStart) /
                             (1000 * 60 * 60 * 24));
 
-                        // Helper function to find the transition point between two working days
-                        const findTransitionPoint = (prevDate, nextDate) => {
-                          const prev = new Date(prevDate);
-                          const next = new Date(nextDate);
-                          let transitionDate = new Date(prev);
-                          transitionDate.setDate(prev.getDate() + 1);
-
-                          let lastNonWorkingDay = null;
-
-                          // Find all non-working days between the two dates
-                          while (transitionDate < next) {
-                            const dateStr = transitionDate
-                              .toISOString()
-                              .split("T")[0];
-                            const isWeekend =
-                              transitionDate.getDay() === 0 ||
-                              transitionDate.getDay() === 6;
-                            const isHoliday = isPublicHoliday(dateStr);
-
-                            // Check if this day is a personal day off (absence) for this employee
-                            const isDayOff = timelineData.dailyUtilization.some(
-                              (day) =>
-                                day.date === dateStr &&
-                                day.netAvailableHours === 0
-                            );
-
-                            // Only include weekends if there are also personal days off or holidays
-                            // Otherwise, skip weekends for transition calculation
-                            if (isDayOff || isHoliday) {
-                              lastNonWorkingDay = dateStr;
-                            } else if (isWeekend && lastNonWorkingDay) {
-                              // Include weekend only if we already have other non-working days
-                              lastNonWorkingDay = dateStr;
-                            }
-
-                            transitionDate.setDate(
-                              transitionDate.getDate() + 1
-                            );
-                          }
-
-                          // If we found non-working days, transition after the last one
-                          if (lastNonWorkingDay) {
-                            const lastNonWorkingDate = new Date(
-                              lastNonWorkingDay
-                            );
-                            const afterLastNonWorking = new Date(
-                              lastNonWorkingDate
-                            );
-                            afterLastNonWorking.setDate(
-                              lastNonWorkingDate.getDate() + 1
-                            );
-
-                            // Transition at the boundary between last non-working day and next working day
-                            return (
-                              (getPositionFromDate(
-                                lastNonWorkingDay,
-                                timelineStart,
-                                timelineEnd
-                              ) +
-                                getPositionFromDate(
-                                  afterLastNonWorking
-                                    .toISOString()
-                                    .split("T")[0],
-                                  timelineStart,
-                                  timelineEnd
-                                )) /
-                              2
-                            );
-                          }
-
-                          // If no non-working day found, transition in the middle between the two dates
-                          const prevX = getPositionFromDate(
-                            prevDate,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          const nextX = getPositionFromDate(
-                            nextDate,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          return (prevX + nextX) / 2;
-                        };
-
                         let path = "";
-
-                        // Start from before first point at 0%
                         const firstPoint = availablePoints[0];
-
-                        // Find transition point before first working day
-                        const beforeFirstDate = new Date(firstPoint.date);
-                        beforeFirstDate.setDate(beforeFirstDate.getDate() - 1);
                         let transitionX = firstPoint.x - dayWidth / 2;
-
-                        // Check if the day before is a non-working day
-                        const beforeDateStr = beforeFirstDate
-                          .toISOString()
-                          .split("T")[0];
-                        const isBeforeWeekend =
-                          beforeFirstDate.getDay() === 0 ||
-                          beforeFirstDate.getDay() === 6;
-                        const isBeforeHoliday = isPublicHoliday(beforeDateStr);
-                        const isBeforeDayOff =
-                          timelineData.dailyUtilization.some(
-                            (day) =>
-                              day.date === beforeDateStr &&
-                              day.netAvailableHours === 0
-                          );
-
-                        if (
-                          isBeforeWeekend ||
-                          isBeforeHoliday ||
-                          isBeforeDayOff
-                        ) {
-                          transitionX = getPositionFromDate(
-                            beforeDateStr,
-                            timelineStart,
-                            timelineEnd
-                          );
-                        }
 
                         path = `M ${Math.max(
                           0,
                           transitionX - dayWidth / 2
-                        )} 100`; // Start at 0%
-                        path += ` H ${transitionX}`; // Horizontal to transition point
-                        path += ` V ${firstPoint.y}`; // Vertical up to first value
-
-                        // Horizontal line through first point
-                        path += ` H ${firstPoint.x + dayWidth / 2}`; // Horizontal through first point
+                        )} 100`;
+                        path += ` H ${transitionX}`;
+                        path += ` V ${firstPoint.y}`;
+                        path += ` H ${firstPoint.x + dayWidth / 2}`;
 
                         for (let i = 1; i < availablePoints.length; i++) {
                           const curr = availablePoints[i];
                           const prev = availablePoints[i - 1];
 
-                          // Find appropriate transition point considering non-working days
-                          const transitionX = findTransitionPoint(
+                          const prevX = getPositionFromDate(
                             prev.date,
-                            curr.date
-                          );
-
-                          path += ` H ${transitionX}`; // Horizontal to transition point
-
-                          // If utilization changes, go vertical at the transition point
-                          if (curr.y !== prev.y) {
-                            path += ` V ${curr.y}`; // Vertical to new level
-                          }
-
-                          // Continue horizontal through current point
-                          path += ` H ${curr.x + dayWidth / 2}`; // Horizontal through current point
-                        }
-
-                        // End: find transition point after last working day
-                        const lastPoint =
-                          availablePoints[availablePoints.length - 1];
-                        const afterLastDate = new Date(lastPoint.date);
-                        afterLastDate.setDate(afterLastDate.getDate() + 1);
-
-                        let endTransitionX = lastPoint.x + dayWidth / 2;
-                        const afterDateStr = afterLastDate
-                          .toISOString()
-                          .split("T")[0];
-                        const isAfterWeekend =
-                          afterLastDate.getDay() === 0 ||
-                          afterLastDate.getDay() === 6;
-                        const isAfterHoliday = isPublicHoliday(afterDateStr);
-                        const isAfterDayOff =
-                          timelineData.dailyUtilization.some(
-                            (day) =>
-                              day.date === afterDateStr &&
-                              day.netAvailableHours === 0
-                          );
-
-                        if (isAfterWeekend || isAfterHoliday || isAfterDayOff) {
-                          endTransitionX = getPositionFromDate(
-                            afterDateStr,
                             timelineStart,
                             timelineEnd
                           );
+                          const nextX = getPositionFromDate(
+                            curr.date,
+                            timelineStart,
+                            timelineEnd
+                          );
+                          const transitionX = (prevX + nextX) / 2;
+
+                          path += ` H ${transitionX}`;
+
+                          if (curr.y !== prev.y) {
+                            path += ` V ${curr.y}`;
+                          }
+
+                          path += ` H ${curr.x + dayWidth / 2}`;
                         }
 
-                        path += ` H ${endTransitionX}`; // Horizontal to end transition point
-                        path += ` V 100`; // Drop to 0% at the transition point
+                        const lastPoint =
+                          availablePoints[availablePoints.length - 1];
+                        let endTransitionX = lastPoint.x + dayWidth / 2;
+
+                        path += ` H ${endTransitionX}`;
+                        path += ` V 100`;
 
                         return path;
                       })()}
@@ -1226,7 +1091,7 @@ const EmployeeAvailabilityDashboard = () => {
                       vectorEffect="non-scaling-stroke"
                     />
 
-                    {/* Area under step curve */}
+                    {/* Area under curve */}
                     <path
                       d={(() => {
                         const availablePoints = timelineData.dailyUtilization
@@ -1248,121 +1113,50 @@ const EmployeeAvailabilityDashboard = () => {
                           ((timelineEnd - timelineStart) /
                             (1000 * 60 * 60 * 24));
 
-                        // Same transition logic as the line
-                        const findTransitionPoint = (prevDate, nextDate) => {
-                          const prev = new Date(prevDate);
-                          const next = new Date(nextDate);
-                          let transitionDate = new Date(prev);
-                          transitionDate.setDate(prev.getDate() + 1);
-
-                          while (transitionDate < next) {
-                            const dateStr = transitionDate
-                              .toISOString()
-                              .split("T")[0];
-                            const isWeekend =
-                              transitionDate.getDay() === 0 ||
-                              transitionDate.getDay() === 6;
-                            const isHoliday = isPublicHoliday(dateStr);
-
-                            if (isWeekend || isHoliday) {
-                              return getPositionFromDate(
-                                dateStr,
-                                timelineStart,
-                                timelineEnd
-                              );
-                            }
-                            transitionDate.setDate(
-                              transitionDate.getDate() + 1
-                            );
-                          }
-
-                          const prevX = getPositionFromDate(
-                            prevDate,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          const nextX = getPositionFromDate(
-                            nextDate,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          return (prevX + nextX) / 2;
-                        };
-
                         let path = "";
-
                         const firstPoint = availablePoints[0];
-                        const beforeFirstDate = new Date(firstPoint.date);
-                        beforeFirstDate.setDate(beforeFirstDate.getDate() - 1);
                         let transitionX = firstPoint.x - dayWidth / 2;
-
-                        const beforeDateStr = beforeFirstDate
-                          .toISOString()
-                          .split("T")[0];
-                        const isBeforeWeekend =
-                          beforeFirstDate.getDay() === 0 ||
-                          beforeFirstDate.getDay() === 6;
-                        const isBeforeHoliday = isPublicHoliday(beforeDateStr);
-
-                        if (isBeforeWeekend || isBeforeHoliday) {
-                          transitionX = getPositionFromDate(
-                            beforeDateStr,
-                            timelineStart,
-                            timelineEnd
-                          );
-                        }
 
                         path = `M ${Math.max(
                           0,
                           transitionX - dayWidth / 2
-                        )} 100`; // Start at bottom
-                        path += ` H ${transitionX}`; // Horizontal to transition point
-                        path += ` V ${firstPoint.y}`; // Up to first value
-                        path += ` H ${firstPoint.x + dayWidth / 2}`; // Horizontal through first point
+                        )} 100`;
+                        path += ` H ${transitionX}`;
+                        path += ` V ${firstPoint.y}`;
+                        path += ` H ${firstPoint.x + dayWidth / 2}`;
 
                         for (let i = 1; i < availablePoints.length; i++) {
                           const curr = availablePoints[i];
                           const prev = availablePoints[i - 1];
 
-                          const transitionX = findTransitionPoint(
+                          const prevX = getPositionFromDate(
                             prev.date,
-                            curr.date
-                          );
-                          path += ` H ${transitionX}`; // Horizontal to transition point
-
-                          if (curr.y !== prev.y) {
-                            path += ` V ${curr.y}`; // Vertical to new level
-                          }
-
-                          path += ` H ${curr.x + dayWidth / 2}`; // Horizontal through current point
-                        }
-
-                        // End transition
-                        const lastPoint =
-                          availablePoints[availablePoints.length - 1];
-                        const afterLastDate = new Date(lastPoint.date);
-                        afterLastDate.setDate(afterLastDate.getDate() + 1);
-
-                        let endTransitionX = lastPoint.x + dayWidth / 2;
-                        const afterDateStr = afterLastDate
-                          .toISOString()
-                          .split("T")[0];
-                        const isAfterWeekend =
-                          afterLastDate.getDay() === 0 ||
-                          afterLastDate.getDay() === 6;
-                        const isAfterHoliday = isPublicHoliday(afterDateStr);
-
-                        if (isAfterWeekend || isAfterHoliday) {
-                          endTransitionX = getPositionFromDate(
-                            afterDateStr,
                             timelineStart,
                             timelineEnd
                           );
+                          const nextX = getPositionFromDate(
+                            curr.date,
+                            timelineStart,
+                            timelineEnd
+                          );
+                          const transitionX = (prevX + nextX) / 2;
+
+                          path += ` H ${transitionX}`;
+
+                          if (curr.y !== prev.y) {
+                            path += ` V ${curr.y}`;
+                          }
+
+                          path += ` H ${curr.x + dayWidth / 2}`;
                         }
 
-                        path += ` H ${endTransitionX}`; // Horizontal to end transition point
-                        path += ` V 100`; // Down to bottom
-                        path += ` Z`; // Close area
+                        const lastPoint =
+                          availablePoints[availablePoints.length - 1];
+                        let endTransitionX = lastPoint.x + dayWidth / 2;
+
+                        path += ` H ${endTransitionX}`;
+                        path += ` V 100`;
+                        path += ` Z`;
 
                         return path;
                       })()}
@@ -1376,7 +1170,6 @@ const EmployeeAvailabilityDashboard = () => {
                 timelineData.dailyUtilization.length > 0 && (
                   <div className="absolute inset-0" style={{ zIndex: 5 }}>
                     {timelineData.dailyUtilization.map((day, index) => {
-                      // Use the actual date from the day object to get precise positioning
                       const dayPosition = getPositionFromDate(
                         day.date,
                         timelineStart,
@@ -1387,17 +1180,17 @@ const EmployeeAvailabilityDashboard = () => {
                           ? 50
                           : 100 - Math.min(day.utilizationRate, 100);
 
-                      let pointColor = "#6b7280"; // gray for unavailable
+                      let pointColor = "#6b7280";
                       if (day.netAvailableHours > 0) {
                         if (day.utilizationRate >= 100)
-                          pointColor = "#ef4444"; // red
+                          pointColor = "#ef4444";
                         else if (day.utilizationRate >= 75)
-                          pointColor = "#f97316"; // orange
+                          pointColor = "#f97316";
                         else if (day.utilizationRate >= 50)
-                          pointColor = "#eab308"; // yellow
+                          pointColor = "#eab308";
                         else if (day.utilizationRate > 0)
-                          pointColor = "#3b82f6"; // blue
-                        else pointColor = "#10b981"; // green
+                          pointColor = "#3b82f6";
+                        else pointColor = "#10b981";
                       }
 
                       const tooltipText =
@@ -1499,6 +1292,38 @@ const EmployeeAvailabilityDashboard = () => {
     );
   };
 
+  const getOverallStats = () => {
+    const ganttData = getEnhancedGanttData();
+    let totalChargeableHours = 0, totalNetAvailableHours = 0;
+    const categoryBreakdown = {};
+    const statusCounts = { available: 0, partiallyBooked: 0, fullyBooked: 0, unavailable: 0 };
+    
+    ganttData.forEach(emp => {
+      totalChargeableHours += emp.chargeableHours || 0;
+      totalNetAvailableHours += emp.netAvailableHours || 0;
+      
+      if (emp.trueUtilizationRate === 0) statusCounts.available++;
+      else if (emp.trueUtilizationRate < 100) statusCounts.partiallyBooked++;
+      else statusCounts.fullyBooked++;
+      
+      emp.assignments.forEach(assignment => {
+        const category = assignment.category;
+        if (!categoryBreakdown[category]) {
+          categoryBreakdown[category] = { count: 0, totalHours: 0 };
+        }
+        categoryBreakdown[category].count++;
+        categoryBreakdown[category].totalHours += assignment.hoursPerDay || 0;
+      });
+    });
+    
+    const overallUtilizationRate = totalNetAvailableHours > 0 ? (totalChargeableHours / totalNetAvailableHours) * 100 : 0;
+    
+    return {
+      total: ganttData.length, ...statusCounts, overallUtilizationRate,
+      totalChargeableHours, totalNetAvailableHours, categoryBreakdown
+    };
+  };
+
   // Upload Screen Component
   if (!fileUploaded) {
     return (
@@ -1581,7 +1406,9 @@ const EmployeeAvailabilityDashboard = () => {
     );
   }
 
-  // Main Dashboard - ONLY GANTT CHART
+  // Main Dashboard with Statistics
+  const stats = getOverallStats();
+
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto">
