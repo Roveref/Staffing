@@ -287,8 +287,8 @@ const EmployeeAvailabilityDashboard = () => {
         };
       }
 
-      const startDate = parseDate(record.startDate);
-      const endDate = parseDate(record.endDate);
+      const startDate = parseDate(record.startDateParsed || record.startDate);
+      const endDate = parseDate(record.endDateParsed || record.endDate);
 
       if (startDate && endDate) {
         employees[empKey].assignments.push({
@@ -425,62 +425,81 @@ const EmployeeAvailabilityDashboard = () => {
 
     const workingDate = new Date(timelineStart);
     while (workingDate <= timelineEnd) {
-      // CRITICAL: Exclude weekends AND public holidays from working days
-      if (
-        workingDate.getDay() !== 0 &&
-        workingDate.getDay() !== 6 &&
-        !isPublicHoliday(workingDate.toISOString().split("T")[0])
-      ) {
-        totalWorkingDays++;
-        const dateStr = workingDate.toISOString().split("T")[0];
-        let dayChargeableHours = 0,
-          dayAbsenceHours = 0;
+      const dateStr = workingDate.toISOString().split("T")[0];
+      const dayOfWeek = workingDate.getDay();
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+      const isPublicHolidayDay = isPublicHoliday(dateStr);
+      const isWorkingDay = !isWeekend && !isPublicHolidayDay;
 
-        employee.assignments.forEach((assignment) => {
-          const startDate = new Date(assignment.startDate);
-          const endDate = new Date(assignment.endDate);
-          const currentDay = new Date(dateStr);
+      let dayChargeableHours = 0,
+        dayAbsenceHours = 0,
+        dayOtherHours = 0;
 
-          // CRITICAL: Include end date properly (<=)
-          if (currentDay >= startDate && currentDay <= endDate) {
-            const hoursForThisDay = assignment.hoursPerDay || 0;
-            if (assignment.category === "chargeable")
-              dayChargeableHours += hoursForThisDay;
-            else if (
-              assignment.category === "absence" ||
-              assignment.category === "loa"
-            )
-              dayAbsenceHours += hoursForThisDay;
+      // Process assignments for this day regardless of whether it's a working day
+      employee.assignments.forEach((assignment) => {
+        const startDate = new Date(assignment.startDate);
+        const endDate = new Date(assignment.endDate);
+        const currentDay = new Date(dateStr);
+
+        // CRITICAL: Include end date properly (<=)
+        if (currentDay >= startDate && currentDay <= endDate) {
+          const hoursForThisDay = assignment.hoursPerDay || 0;
+          if (assignment.category === "chargeable") {
+            dayChargeableHours += hoursForThisDay;
+          } else if (
+            assignment.category === "absence" ||
+            assignment.category === "loa"
+          ) {
+            dayAbsenceHours += hoursForThisDay;
+          } else {
+            dayOtherHours += hoursForThisDay;
           }
-        });
+        }
+      });
 
-        const dayNetAvailableHours = Math.max(0, 8 - dayAbsenceHours);
-        const dayUtilizationRate =
+      // Calculate daily metrics
+      let dayNetAvailableHours, dayUtilizationRate, dayAvailableCapacity;
+      
+      if (!isWorkingDay) {
+        // Weekend or public holiday - no availability expected
+        dayNetAvailableHours = 0;
+        dayUtilizationRate = 0;
+        dayAvailableCapacity = 0;
+      } else {
+        // Working day
+        totalWorkingDays++;
+        dayNetAvailableHours = Math.max(0, 8 - dayAbsenceHours);
+        dayUtilizationRate =
           dayNetAvailableHours > 0
             ? (dayChargeableHours / dayNetAvailableHours) * 100
             : 0;
-        const dayAvailableCapacity = Math.max(
+        dayAvailableCapacity = Math.max(
           0,
           dayNetAvailableHours - dayChargeableHours
         );
 
-        dailyUtilization.push({
-          date: dateStr,
-          chargeableHours: dayChargeableHours,
-          absenceHours: dayAbsenceHours,
-          netAvailableHours: dayNetAvailableHours,
-          utilizationRate: dayUtilizationRate,
-          availableCapacityHours: dayAvailableCapacity,
-          position: getPositionFromDate(
-            workingDate,
-            timelineStart,
-            timelineEnd
-          ),
-        });
-
         chargeableHours += dayChargeableHours;
         absenceHours += dayAbsenceHours;
       }
+
+      dailyUtilization.push({
+        date: dateStr,
+        chargeableHours: dayChargeableHours,
+        absenceHours: dayAbsenceHours,
+        otherHours: dayOtherHours,
+        netAvailableHours: dayNetAvailableHours,
+        utilizationRate: dayUtilizationRate,
+        availableCapacityHours: dayAvailableCapacity,
+        isWorkingDay,
+        isWeekend,
+        isPublicHoliday: isPublicHolidayDay,
+        position: getPositionFromDate(
+          workingDate,
+          timelineStart,
+          timelineEnd
+        ),
+      });
+
       workingDate.setDate(workingDate.getDate() + 1);
     }
 
@@ -635,8 +654,7 @@ const EmployeeAvailabilityDashboard = () => {
                   </div>
                 </div>
               </div>
-              <div className="flex-1 relative h-6 bg-gray-100 rounded">
-                {/* Vertical grid lines for job timeline alignment */}
+              <div className="flex-1 relative h-6 bg-gray-100 rounded" style={{ marginRight: '24px' }}>                {/* Vertical grid lines for job timeline alignment */}
                 {getTimelineLabels().map((label, index) => (
                   <div
                     key={`job-grid-${idx}-${index}`}
@@ -701,25 +719,7 @@ const EmployeeAvailabilityDashboard = () => {
 
     return (
       <div className="p-3 space-y-3">
-        {/* Timeline Reference Grid - spans across all charts */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{ left: "16rem" }}
-        >
-          {getTimelineLabels().map((label, index) => (
-            <div
-              key={`grid-${index}`}
-              className="absolute w-px bg-gray-200 opacity-40"
-              style={{
-                left: `${label.position}%`,
-                top: "0",
-                height: "100%",
-                zIndex: 1,
-              }}
-            />
-          ))}
-        </div>
-
+       
         {/* Available Capacity Summary */}
         <div className="bg-green-50 p-3 rounded-lg relative">
           <div className="flex items-center">
@@ -805,32 +805,219 @@ const EmployeeAvailabilityDashboard = () => {
             </div>
           </div>
         </div>
-
-        {/* Daily Utilization Variation Chart */}
-        <div className="bg-gray-50 p-3 rounded-lg relative">
-          <div className="flex items-center mb-3">
-            <div className="w-64 flex-shrink-0 pr-4">
+        
+{/* Daily Hours Detail Table */}
+<div className="bg-white border rounded-lg p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
               <div className="text-sm font-medium text-gray-900">
-                Daily Utilization Variation
+                Daily Hours Detail
               </div>
               <div className="text-xs text-gray-600">
-                Day-by-day utilization rate
+                Day-by-day breakdown of hours
               </div>
             </div>
-            <div className="flex-1 relative h-16 bg-white rounded border border-gray-200">
-              {/* Vertical grid lines */}
-              {getTimelineLabels().map((label, index) => (
-                <div
-                  key={`util-grid-${index}`}
-                  className="absolute w-px bg-gray-200 opacity-50"
-                  style={{
-                    left: `${label.position}%`,
-                    top: "0",
-                    height: "100%",
-                    zIndex: 2,
-                  }}
-                />
-              ))}
+            <div className="text-xs text-gray-500">
+              Working days only (excluding weekends and holidays)
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Date</th>
+                  <th className="text-left py-2 px-3 font-medium text-gray-700">Day</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Available</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Absence</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Chargeable</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Net Available</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Remaining</th>
+                  <th className="text-right py-2 px-3 font-medium text-gray-700">Utilization</th>
+                </tr>
+              </thead>
+              <tbody>
+                {timelineData.dailyUtilization && timelineData.dailyUtilization.map((day, index) => {
+                  const date = new Date(day.date);
+                  const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                  const isHoliday = isPublicHoliday(day.date);
+                  
+                  // Skip weekends and holidays
+                  if (isWeekend || isHoliday) return null;
+                  
+                  const baseAvailable = 8; // 8 hours per working day
+                  const remaining = day.availableCapacityHours;
+                  
+                  return (
+                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="py-2 px-3 text-gray-900 font-medium">
+                        {date.toLocaleDateString('fr-FR', { 
+                          day: '2-digit', 
+                          month: '2-digit' 
+                        })}
+                      </td>
+                      <td className="py-2 px-3 text-gray-600">
+                        {date.toLocaleDateString('fr-FR', { 
+                          weekday: 'short' 
+                        })}
+                      </td>
+                      <td className="py-2 px-3 text-right text-gray-700">
+                        {baseAvailable.toFixed(1)}h
+                      </td>
+                      <td className="py-2 px-3 text-right text-red-600">
+                        {day.absenceHours.toFixed(1)}h
+                      </td>
+                      <td className="py-2 px-3 text-right text-blue-600">
+                        {day.chargeableHours.toFixed(1)}h
+                      </td>
+                      <td className="py-2 px-3 text-right text-gray-700 font-medium">
+                        {day.netAvailableHours.toFixed(1)}h
+                      </td>
+                      <td className={`py-2 px-3 text-right font-medium ${
+                        remaining > 0 ? 'text-green-600' : 
+                        remaining === 0 ? 'text-gray-600' : 'text-red-600'
+                      }`}>
+                        {remaining.toFixed(1)}h
+                      </td>
+                      <td className={`py-2 px-3 text-right font-medium ${
+                        day.utilizationRate > 100 ? 'text-red-600' :
+                        day.utilizationRate > 75 ? 'text-orange-600' :
+                        day.utilizationRate > 50 ? 'text-yellow-600' :
+                        day.utilizationRate > 0 ? 'text-blue-600' : 'text-green-600'
+                      }`}>
+                        {day.utilizationRate.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          
+          {/* Summary row */}
+          <div className="mt-3 pt-3 border-t border-gray-200">
+            <div className="flex justify-between items-center text-sm">
+              <div className="text-gray-700">
+                <span className="font-medium">Period Summary:</span> 
+                <span className="ml-2">
+                  {timelineData.dailyUtilization ? 
+                    timelineData.dailyUtilization.filter(day => {
+                      const date = new Date(day.date);
+                      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+                      const isHoliday = isPublicHoliday(day.date);
+                      return !isWeekend && !isHoliday;
+                    }).length : 0
+                  } working days
+                </span>
+              </div>
+              <div className="flex items-center gap-6">
+                <div className="text-blue-600">
+                  <span className="font-medium">
+                    {timelineData.chargeableHours.toFixed(1)}h
+                  </span>
+                  <span className="text-gray-600 ml-1">chargeable</span>
+                </div>
+                <div className="text-red-600">
+                  <span className="font-medium">
+                    {timelineData.absenceHours.toFixed(1)}h
+                  </span>
+                  <span className="text-gray-600 ml-1">absence</span>
+                </div>
+                <div className="text-green-600">
+                  <span className="font-medium">
+                    {timelineData.availableCapacityHours.toFixed(1)}h
+                  </span>
+                  <span className="text-gray-600 ml-1">available</span>
+                </div>
+                <div className={`font-medium ${
+                  timelineData.utilizationRate > 100 ? 'text-red-600' :
+                  timelineData.utilizationRate > 75 ? 'text-orange-600' :
+                  'text-blue-600'
+                }`}>
+                  {timelineData.utilizationRate.toFixed(1)}% avg utilization
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+ {/* Daily Utilization Variation Chart */}
+ <div className="bg-gray-50 p-6 rounded-lg relative mb-6">
+          <div className="flex items-start mb-6">
+          <div className="w-56 flex-shrink-0 pr-4">
+              <div className="text-lg font-medium text-gray-900 mb-2">
+                Utilization
+              </div>
+
+            </div>
+            
+            {/* Timeline above the chart */}
+            <div className="flex-1 relative">
+              {/* Month references */}
+              <div className="relative h-8 mb-3">
+                {(() => {
+                  const { startDate, endDate } = getTimelineRange();
+                  const monthLabels = [];
+                  
+                  // Generate month labels
+                  const currentMonth = new Date(startDate);
+                  currentMonth.setDate(1); // Start of month
+                  
+                  while (currentMonth <= endDate) {
+                    const monthStart = new Date(currentMonth);
+                    const monthEnd = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
+                    const displayEnd = monthEnd > endDate ? endDate : monthEnd;
+                    
+                    const startPos = getPositionFromDate(monthStart, startDate, endDate);
+                    const endPos = getPositionFromDate(displayEnd, startDate, endDate);
+                    const width = endPos - startPos;
+                    
+                    if (width > 8) { // Only show if month section is wide enough
+                      monthLabels.push(
+                        <div
+                          key={`month-${currentMonth.getTime()}`}
+                          className="absolute bg-blue-50 text-blue-700 text-base font-medium border-l border-blue-300"
+                          style={{
+                            left: `${startPos}%`,
+                            width: `${width}%`,
+                            top: '0px',
+                            height: '32px',
+                            fontSize: '14px',
+                            paddingLeft: '8px',
+                            paddingTop: '4px'
+                          }}
+                        >
+                          {currentMonth.toLocaleDateString('fr-FR', { 
+                            month: 'short', 
+                            year: ganttTimeframe === 'quarter' ? '2-digit' : undefined 
+                          })}
+                        </div>
+                      );
+                    }
+                    
+                    currentMonth.setMonth(currentMonth.getMonth() + 1);
+                  }
+                  
+                  return monthLabels;
+                })()}
+              </div>
+              
+              {/* Utilization chart */}
+              <div className="h-32 bg-white rounded border border-gray-200 relative">
+                {/* Vertical grid lines */}
+                {getTimelineLabels().map((label, index) => (
+                  <div
+                    key={`util-grid-${index}`}
+                    className="absolute w-px bg-gray-200 opacity-50"
+                    style={{
+                      left: `${label.position}%`,
+                      top: "0",
+                      height: "100%",
+                      zIndex: 2,
+                    }}
+                  />
+                ))}
 
               {/* Grid lines */}
               <div
@@ -848,115 +1035,28 @@ const EmployeeAvailabilityDashboard = () => {
 
               {/* Y-axis labels */}
               <div
-                className="absolute -left-8 text-xs text-gray-500"
-                style={{ top: "-2px" }}
+                className="absolute -left-12 text-sm text-gray-500 font-medium"
+                style={{ top: "-4px" }}
               >
                 100%
               </div>
               <div
-                className="absolute -left-6 text-xs text-gray-500"
+                className="absolute -left-10 text-sm text-gray-500 font-medium"
                 style={{ top: "50%", transform: "translateY(-50%)" }}
               >
                 50%
               </div>
               <div
-                className="absolute -left-4 text-xs text-gray-500"
-                style={{ bottom: "-2px" }}
+                className="absolute -left-6 text-sm text-gray-500 font-medium"
+                style={{ bottom: "-4px" }}
               >
                 0%
               </div>
 
-              {/* Public holidays background */}
-              {(() => {
-                const holidayAreas = [];
-                const { startDate, endDate } = getTimelineRange();
-                const currentDate = new Date(startDate);
-
-                while (currentDate <= endDate) {
-                  if (
-                    isPublicHoliday(currentDate.toISOString().split("T")[0])
-                  ) {
-                    const centerX = getPositionFromDate(
-                      currentDate.toISOString().split("T")[0],
-                      timelineStart,
-                      timelineEnd
-                    );
-                    const totalDays =
-                      (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
-                    const dayWidth = 100 / totalDays;
-
-                    holidayAreas.push(
-                      <div
-                        key={`holiday-${
-                          currentDate.toISOString().split("T")[0]
-                        }`}
-                        className="absolute bg-blue-200 opacity-60"
-                        style={{
-                          left: `${centerX - dayWidth / 2}%`,
-                          top: "0%",
-                          width: `${dayWidth}%`,
-                          height: "100%",
-                          zIndex: 2,
-                        }}
-                        title={`Public Holiday: ${currentDate.toLocaleDateString(
-                          "en-US",
-                          { weekday: "long", month: "short", day: "numeric" }
-                        )}`}
-                      />
-                    );
-                  }
-                  currentDate.setDate(currentDate.getDate() + 1);
-                }
-                return holidayAreas;
-              })()}
-
               {/* Weekend background */}
-              {(() => {
-                const weekendAreas = [];
-                const { startDate, endDate } = getTimelineRange();
-                const currentDate = new Date(startDate);
-
-                while (currentDate <= endDate) {
-                  const dayOfWeek = currentDate.getDay();
-                  if (dayOfWeek === 0 || dayOfWeek === 6) {
-                    const centerX = getPositionFromDate(
-                      currentDate.toISOString().split("T")[0],
-                      timelineStart,
-                      timelineEnd
-                    );
-                    const totalDays =
-                      (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
-                    const dayWidth = 100 / totalDays;
-
-                    weekendAreas.push(
-                      <div
-                        key={`weekend-${
-                          currentDate.toISOString().split("T")[0]
-                        }`}
-                        className="absolute bg-gray-200 opacity-50"
-                        style={{
-                          left: `${centerX - dayWidth / 2}%`,
-                          top: "0%",
-                          width: `${dayWidth}%`,
-                          height: "100%",
-                          zIndex: 1,
-                        }}
-                        title={`Weekend: ${currentDate.toLocaleDateString(
-                          "en-US",
-                          { weekday: "long", month: "short", day: "numeric" }
-                        )}`}
-                      />
-                    );
-                  }
-                  currentDate.setDate(currentDate.getDate() + 1);
-                }
-                return weekendAreas;
-              })()}
-
-              {/* Days off (holidays/absence) */}
               {timelineData.dailyUtilization &&
                 timelineData.dailyUtilization.map((day, index) => {
-                  if (day.netAvailableHours === 0) {
+                  if (day.isWeekend) {
                     const centerX = getPositionFromDate(
                       day.date,
                       timelineStart,
@@ -968,7 +1068,71 @@ const EmployeeAvailabilityDashboard = () => {
 
                     return (
                       <div
-                        key={`dayoff-${index}`}
+                        key={`weekend-${index}`}
+                        className="absolute bg-gray-200 opacity-50"
+                        style={{
+                          left: `${centerX - dayWidth / 2}%`,
+                          top: "0%",
+                          width: `${dayWidth}%`,
+                          height: "100%",
+                          zIndex: 1,
+                        }}
+                        title={`Weekend: ${day.date}`}
+                      />
+                    );
+                  }
+                  return null;
+                })}
+
+              {/* Public holidays background */}
+              {timelineData.dailyUtilization &&
+                timelineData.dailyUtilization.map((day, index) => {
+                  if (day.isPublicHoliday) {
+                    const centerX = getPositionFromDate(
+                      day.date,
+                      timelineStart,
+                      timelineEnd
+                    );
+                    const totalDays =
+                      (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                    const dayWidth = 100 / totalDays;
+
+                    return (
+                      <div
+                        key={`holiday-${index}`}
+                        className="absolute bg-blue-200 opacity-60"
+                        style={{
+                          left: `${centerX - dayWidth / 2}%`,
+                          top: "0%",
+                          width: `${dayWidth}%`,
+                          height: "100%",
+                          zIndex: 2,
+                        }}
+                        title={`Public Holiday: ${day.date}`}
+                      />
+                    );
+                  }
+                  return null;
+                })}
+
+              {/* Days off (absence on working days) */}
+              {timelineData.dailyUtilization &&
+                timelineData.dailyUtilization.map((day, index) => {
+                  const isUnavailable = !day.isWorkingDay || (day.isWorkingDay && day.absenceHours >= 8);
+                  
+                  if (isUnavailable && day.isWorkingDay && day.absenceHours > 0) {
+                    const centerX = getPositionFromDate(
+                      day.date,
+                      timelineStart,
+                      timelineEnd
+                    );
+                    const totalDays =
+                      (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                    const dayWidth = 100 / totalDays;
+
+                    return (
+                      <div
+                        key={`absence-${index}`}
                         className="absolute bg-orange-200"
                         style={{
                           left: `${centerX - dayWidth / 2}%`,
@@ -985,191 +1149,279 @@ const EmployeeAvailabilityDashboard = () => {
                   return null;
                 })}
 
-              {/* SVG curve for utilization */}
-              {timelineData.dailyUtilization &&
-                timelineData.dailyUtilization.length > 1 && (
-                  <svg
-                    className="absolute inset-0 w-full h-full"
-                    viewBox="0 0 100 100"
-                    preserveAspectRatio="none"
-                    style={{ zIndex: 4 }}
-                  >
-                    <defs>
-                      <linearGradient
-                        id={`curveGradient-${employee.empId}`}
-                        x1="0%"
-                        y1="0%"
-                        x2="0%"
-                        y2="100%"
-                      >
-                        <stop
-                          offset="0%"
-                          stopColor="#3b82f6"
-                          stopOpacity="0.2"
-                        />
-                        <stop
-                          offset="100%"
-                          stopColor="#3b82f6"
-                          stopOpacity="0.05"
-                        />
-                      </linearGradient>
-                    </defs>
+             {/* SVG curve for utilization */}
+             {timelineData.dailyUtilization &&
+                      timelineData.dailyUtilization.length > 1 && (
+                        <svg
+                          className="absolute inset-0 w-full h-full"
+                          viewBox="0 0 100 100"
+                          preserveAspectRatio="none"
+                          style={{ zIndex: 4 }}
+                        >
+                          <defs>
+                            <linearGradient
+                              id={`curveGradient-${employee.empId}`}
+                              x1="0%"
+                              y1="0%"
+                              x2="0%"
+                              y2="100%"
+                            >
+                              <stop
+                                offset="0%"
+                                stopColor="#3b82f6"
+                                stopOpacity="0.2"
+                              />
+                              <stop
+                                offset="100%"
+                                stopColor="#3b82f6"
+                                stopOpacity="0.05"
+                              />
+                            </linearGradient>
+                          </defs>
 
-                    {/* Utilization curve path */}
-                    <path
-                      d={(() => {
-                        const availablePoints = timelineData.dailyUtilization
-                          .filter((day) => day.netAvailableHours > 0)
-                          .map((day) => {
-                            const x = getPositionFromDate(
-                              day.date,
-                              timelineStart,
-                              timelineEnd
-                            );
-                            const y = 100 - Math.min(day.utilizationRate, 100);
-                            return { x, y, date: day.date };
-                          });
+                          {/* Utilization curve path */}
+                          <path
+                            d={(() => {
+                              const availablePoints = timelineData.dailyUtilization
+                                .map((day, index) => {
+                                  const dayDate = new Date(day.date);
+                                  const isWeekend = dayDate.getDay() === 0 || dayDate.getDay() === 6;
+                                  const isHoliday = isPublicHoliday(day.date);
+                                  
+                                  const x = getPositionFromDate(
+                                    day.date,
+                                    timelineStart,
+                                    timelineEnd
+                                  );
+                                  const y = 100 - Math.min(day.utilizationRate, 100);
+                                  
+                                  return { 
+                                    x, 
+                                    y, 
+                                    date: day.date,
+                                    isWeekend,
+                                    isHoliday,
+                                    isAvailable: !isWeekend && day.netAvailableHours > 0,
+                                    utilizationRate: day.utilizationRate,
+                                    netAvailableHours: day.netAvailableHours
+                                  };
+                                })
+                                .filter(point => !point.isWeekend); // Remove weekends entirely
 
-                        if (availablePoints.length < 1) return "";
+                              if (availablePoints.length < 1) return "";
 
-                        const dayWidth =
-                          100 /
-                          ((timelineEnd - timelineStart) /
-                            (1000 * 60 * 60 * 24));
+                              const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                              const dayWidth = 100 / totalDays;
 
-                        let path = "";
-                        const firstPoint = availablePoints[0];
-                        let transitionX = firstPoint.x - dayWidth / 2;
+                              let path = "";
+                              let lastWorkingPoint = null;
+                              
+                              // Start from bottom left
+                              path = `M 0 100`;
 
-                        path = `M ${Math.max(
-                          0,
-                          transitionX - dayWidth / 2
-                        )} 100`;
-                        path += ` H ${transitionX}`;
-                        path += ` V ${firstPoint.y}`;
-                        path += ` H ${firstPoint.x + dayWidth / 2}`;
+                              for (let i = 0; i < availablePoints.length; i++) {
+                                const currentPoint = availablePoints[i];
+                                
+                                // If this is an available working day
+                                if (currentPoint.isAvailable) {
+                                  if (lastWorkingPoint === null) {
+                                    // First working day - go to it
+                                    path += ` L ${currentPoint.x - dayWidth / 2} 100`;
+                                    path += ` L ${currentPoint.x - dayWidth / 2} ${currentPoint.y}`;
+                                  } else {
+                                    // Coming from another working day
+                                    if (currentPoint.y !== lastWorkingPoint.y) {
+                                      // Different utilization - create step
+                                      path += ` L ${currentPoint.x - dayWidth / 2} ${lastWorkingPoint.y}`;
+                                      path += ` L ${currentPoint.x - dayWidth / 2} ${currentPoint.y}`;
+                                    } else {
+                                      // Same utilization - just extend
+                                      path += ` L ${currentPoint.x - dayWidth / 2} ${currentPoint.y}`;
+                                    }
+                                  }
+                                  
+                                  // Extend to the end of this working day
+                                  path += ` L ${currentPoint.x + dayWidth / 2} ${currentPoint.y}`;
+                                  
+                                  // Check if next available working day exists and is not consecutive
+                                  let nextWorkingIndex = i + 1;
+                                  while (nextWorkingIndex < availablePoints.length && !availablePoints[nextWorkingIndex].isAvailable) {
+                                    nextWorkingIndex++;
+                                  }
+                                  
+                                  if (nextWorkingIndex < availablePoints.length) {
+                                    const nextWorkingPoint = availablePoints[nextWorkingIndex];
+                                    const currentDate = new Date(currentPoint.date);
+                                    const nextDate = new Date(nextWorkingPoint.date);
+                                    
+                                    // Find the last day we should extend to (could be weekend or holiday)
+                                    let extendToDate = new Date(currentDate);
+                                    extendToDate.setDate(extendToDate.getDate() + 1);
+                                    
+                                    // Keep extending until we hit the next working day or run out of days
+                                    let lastExtendDate = currentDate;
+                                    while (extendToDate < nextDate) {
+                                      lastExtendDate = new Date(extendToDate);
+                                      extendToDate.setDate(extendToDate.getDate() + 1);
+                                    }
+                                    
+                                    // If we can extend beyond the current working day
+                                    if (lastExtendDate > currentDate) {
+                                      const extendToX = getPositionFromDate(
+                                        lastExtendDate.toISOString().split('T')[0],
+                                        timelineStart,
+                                        timelineEnd
+                                      );
+                                      path += ` L ${extendToX + dayWidth / 2} ${currentPoint.y}`;
+                                    }
+                                  } else {
+                                    // This is the last working day - extend to the end
+                                    path += ` L 100 ${currentPoint.y}`;
+                                  }
+                                  
+                                  lastWorkingPoint = currentPoint;
+                                }
+                              }
 
-                        for (let i = 1; i < availablePoints.length; i++) {
-                          const curr = availablePoints[i];
-                          const prev = availablePoints[i - 1];
+                              // Close the path
+                              path += ` L 100 100 Z`;
+                              
+                              return path;
+                            })()}
+                            fill="none"
+                            stroke="#3b82f6"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
 
-                          const prevX = getPositionFromDate(
-                            prev.date,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          const nextX = getPositionFromDate(
-                            curr.date,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          const transitionX = (prevX + nextX) / 2;
+                          {/* Area under curve */}
+                          <path
+                            d={(() => {
+                              const availablePoints = timelineData.dailyUtilization
+                                .map((day, index) => {
+                                  const dayDate = new Date(day.date);
+                                  const isWeekend = dayDate.getDay() === 0 || dayDate.getDay() === 6;
+                                  const isHoliday = isPublicHoliday(day.date);
+                                  
+                                  const x = getPositionFromDate(
+                                    day.date,
+                                    timelineStart,
+                                    timelineEnd
+                                  );
+                                  const y = 100 - Math.min(day.utilizationRate, 100);
+                                  
+                                  return { 
+                                    x, 
+                                    y, 
+                                    date: day.date,
+                                    isWeekend,
+                                    isHoliday,
+                                    isAvailable: !isWeekend && day.netAvailableHours > 0,
+                                    utilizationRate: day.utilizationRate,
+                                    netAvailableHours: day.netAvailableHours
+                                  };
+                                })
+                                .filter(point => !point.isWeekend); // Remove weekends entirely
 
-                          path += ` H ${transitionX}`;
+                              if (availablePoints.length < 1) return "";
 
-                          if (curr.y !== prev.y) {
-                            path += ` V ${curr.y}`;
-                          }
+                              const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                              const dayWidth = 100 / totalDays;
 
-                          path += ` H ${curr.x + dayWidth / 2}`;
-                        }
+                              let path = "";
+                              let lastWorkingPoint = null;
+                              
+                              // Start from bottom left
+                              path = `M 0 100`;
 
-                        const lastPoint =
-                          availablePoints[availablePoints.length - 1];
-                        let endTransitionX = lastPoint.x + dayWidth / 2;
+                              for (let i = 0; i < availablePoints.length; i++) {
+                                const currentPoint = availablePoints[i];
+                                
+                                // If this is an available working day
+                                if (currentPoint.isAvailable) {
+                                  if (lastWorkingPoint === null) {
+                                    // First working day - go to it
+                                    path += ` L ${currentPoint.x - dayWidth / 2} 100`;
+                                    path += ` L ${currentPoint.x - dayWidth / 2} ${currentPoint.y}`;
+                                  } else {
+                                    // Coming from another working day
+                                    if (currentPoint.y !== lastWorkingPoint.y) {
+                                      // Different utilization - create step
+                                      path += ` L ${currentPoint.x - dayWidth / 2} ${lastWorkingPoint.y}`;
+                                      path += ` L ${currentPoint.x - dayWidth / 2} ${currentPoint.y}`;
+                                    } else {
+                                      // Same utilization - just extend
+                                      path += ` L ${currentPoint.x - dayWidth / 2} ${currentPoint.y}`;
+                                    }
+                                  }
+                                  
+                                  // Extend to the end of this working day
+                                  path += ` L ${currentPoint.x + dayWidth / 2} ${currentPoint.y}`;
+                                  
+                                  // Check if next available working day exists and is not consecutive
+                                  let nextWorkingIndex = i + 1;
+                                  while (nextWorkingIndex < availablePoints.length && !availablePoints[nextWorkingIndex].isAvailable) {
+                                    nextWorkingIndex++;
+                                  }
+                                  
+                                  if (nextWorkingIndex < availablePoints.length) {
+                                    const nextWorkingPoint = availablePoints[nextWorkingIndex];
+                                    const currentDate = new Date(currentPoint.date);
+                                    const nextDate = new Date(nextWorkingPoint.date);
+                                    
+                                    // Find the last day we should extend to (could be weekend or holiday)
+                                    let extendToDate = new Date(currentDate);
+                                    extendToDate.setDate(extendToDate.getDate() + 1);
+                                    
+                                    // Keep extending until we hit the next working day or run out of days
+                                    let lastExtendDate = currentDate;
+                                    while (extendToDate < nextDate) {
+                                      lastExtendDate = new Date(extendToDate);
+                                      extendToDate.setDate(extendToDate.getDate() + 1);
+                                    }
+                                    
+                                    // If we can extend beyond the current working day
+                                    if (lastExtendDate > currentDate) {
+                                      const extendToX = getPositionFromDate(
+                                        lastExtendDate.toISOString().split('T')[0],
+                                        timelineStart,
+                                        timelineEnd
+                                      );
+                                      path += ` L ${extendToX + dayWidth / 2} ${currentPoint.y}`;
+                                    }
+                                  } else {
+                                    // This is the last working day - extend to the end
+                                    path += ` L 100 ${currentPoint.y}`;
+                                  }
+                                  
+                                  lastWorkingPoint = currentPoint;
+                                }
+                              }
 
-                        path += ` H ${endTransitionX}`;
-                        path += ` V 100`;
-
-                        return path;
-                      })()}
-                      fill="none"
-                      stroke="#3b82f6"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-
-                    {/* Area under curve */}
-                    <path
-                      d={(() => {
-                        const availablePoints = timelineData.dailyUtilization
-                          .filter((day) => day.netAvailableHours > 0)
-                          .map((day) => {
-                            const x = getPositionFromDate(
-                              day.date,
-                              timelineStart,
-                              timelineEnd
-                            );
-                            const y = 100 - Math.min(day.utilizationRate, 100);
-                            return { x, y, date: day.date };
-                          });
-
-                        if (availablePoints.length < 1) return "";
-
-                        const dayWidth =
-                          100 /
-                          ((timelineEnd - timelineStart) /
-                            (1000 * 60 * 60 * 24));
-
-                        let path = "";
-                        const firstPoint = availablePoints[0];
-                        let transitionX = firstPoint.x - dayWidth / 2;
-
-                        path = `M ${Math.max(
-                          0,
-                          transitionX - dayWidth / 2
-                        )} 100`;
-                        path += ` H ${transitionX}`;
-                        path += ` V ${firstPoint.y}`;
-                        path += ` H ${firstPoint.x + dayWidth / 2}`;
-
-                        for (let i = 1; i < availablePoints.length; i++) {
-                          const curr = availablePoints[i];
-                          const prev = availablePoints[i - 1];
-
-                          const prevX = getPositionFromDate(
-                            prev.date,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          const nextX = getPositionFromDate(
-                            curr.date,
-                            timelineStart,
-                            timelineEnd
-                          );
-                          const transitionX = (prevX + nextX) / 2;
-
-                          path += ` H ${transitionX}`;
-
-                          if (curr.y !== prev.y) {
-                            path += ` V ${curr.y}`;
-                          }
-
-                          path += ` H ${curr.x + dayWidth / 2}`;
-                        }
-
-                        const lastPoint =
-                          availablePoints[availablePoints.length - 1];
-                        let endTransitionX = lastPoint.x + dayWidth / 2;
-
-                        path += ` H ${endTransitionX}`;
-                        path += ` V 100`;
-                        path += ` Z`;
-
-                        return path;
-                      })()}
-                      fill={`url(#curveGradient-${employee.empId})`}
-                    />
-                  </svg>
-                )}
+                              // Close the path
+                              path += ` L 100 100 Z`;
+                              
+                              return path;
+                            })()}
+                            fill={`url(#curveGradient-${employee.empId})`}
+                          />
+                        </svg>
+                      )}
 
               {/* Data points overlay */}
               {timelineData.dailyUtilization &&
                 timelineData.dailyUtilization.length > 0 && (
                   <div className="absolute inset-0" style={{ zIndex: 5 }}>
                     {timelineData.dailyUtilization.map((day, index) => {
+                      const dayDate = new Date(day.date);
+                      const isWeekend = dayDate.getDay() === 0 || dayDate.getDay() === 6;
+                      const isHoliday = isPublicHoliday(day.date);
+                      
+                      // Skip weekends entirely
+                      if (isWeekend) return null;
+                      
                       const dayPosition = getPositionFromDate(
                         day.date,
                         timelineStart,
@@ -1181,7 +1433,16 @@ const EmployeeAvailabilityDashboard = () => {
                           : 100 - Math.min(day.utilizationRate, 100);
 
                       let pointColor = "#6b7280";
-                      if (day.netAvailableHours > 0) {
+                      let isEmptyCircle = false;
+                      
+                      // Check if it's a holiday or absence day
+                      if (isHoliday) {
+                        isEmptyCircle = true;
+                        pointColor = "#3b82f6"; // Orange pour les jours fériés
+                      } else if (day.netAvailableHours === 0) {
+                        isEmptyCircle = true;
+                        pointColor = "#f97316"; // Bleu pour les absences
+                      } else if (day.netAvailableHours > 0) {
                         if (day.utilizationRate >= 100)
                           pointColor = "#ef4444";
                         else if (day.utilizationRate >= 75)
@@ -1193,25 +1454,27 @@ const EmployeeAvailabilityDashboard = () => {
                         else pointColor = "#10b981";
                       }
 
-                      const tooltipText =
-                        day.netAvailableHours === 0
-                          ? `${day.date}: Unavailable (${day.absenceHours}h absence)`
-                          : `${day.date}: ${day.utilizationRate.toFixed(
-                              1
-                            )}% utilized (${day.chargeableHours.toFixed(
-                              1
-                            )}h/${day.netAvailableHours.toFixed(1)}h)`;
+                      const tooltipText = isHoliday 
+                        ? `${day.date}: Public Holiday`
+                        : day.netAvailableHours === 0
+                        ? `${day.date}: Unavailable (${day.absenceHours}h absence)`
+                        : `${day.date}: ${day.utilizationRate.toFixed(
+                            1
+                          )}% utilized (${day.chargeableHours.toFixed(
+                            1
+                          )}h/${day.netAvailableHours.toFixed(1)}h)`;
 
                       return (
                         <div
                           key={index}
-                          className={`absolute w-2 h-2 rounded-full border border-white cursor-pointer hover:scale-125 transition-transform ${
-                            day.netAvailableHours === 0 ? "opacity-80" : ""
+                          className={`absolute w-2 h-2 rounded-full border-2 cursor-pointer hover:scale-125 transition-transform ${
+                            isEmptyCircle ? "bg-white" : ""
                           }`}
                           style={{
                             left: `${dayPosition}%`,
                             top: `${y}%`,
-                            backgroundColor: pointColor,
+                            backgroundColor: isEmptyCircle ? "white" : pointColor,
+                            borderColor: pointColor,
                             transform: "translate(-50%, -50%)",
                           }}
                           title={tooltipText}
@@ -1221,7 +1484,7 @@ const EmployeeAvailabilityDashboard = () => {
                   </div>
                 )}
 
-              <div className="absolute top-0 right-0 text-xs text-gray-400 p-1">
+<div className="absolute top-0 right-0 text-sm text-gray-400 p-2">
                 {timelineData.dailyUtilization
                   ? timelineData.dailyUtilization.length
                   : 0}{" "}
@@ -1229,31 +1492,32 @@ const EmployeeAvailabilityDashboard = () => {
               </div>
             </div>
           </div>
+          </div>
 
-          {/* Legend for curve */}
-          <div className="flex items-center gap-4 text-xs text-gray-600 ml-64">
-            <div className="flex items-center gap-1">
-              <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+         {/* Legend for curve */}
+         <div className="flex items-center gap-6 text-sm text-gray-600 ml-72">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-gray-400 rounded-full"></div>
               <span>Unavailable</span>
             </div>
-            <div className="flex items-center gap-1">
-              <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-green-500 rounded-full"></div>
               <span>0%</span>
             </div>
-            <div className="flex items-center gap-1">
-              <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
               <span>1-49%</span>
             </div>
-            <div className="flex items-center gap-1">
-              <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
               <span>50-74%</span>
             </div>
-            <div className="flex items-center gap-1">
-              <div className="w-3 h-3 bg-orange-500 rounded-full"></div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-orange-500 rounded-full"></div>
               <span>75-99%</span>
             </div>
-            <div className="flex items-center gap-1">
-              <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-red-500 rounded-full"></div>
               <span>100%+</span>
             </div>
           </div>
@@ -1486,8 +1750,8 @@ const EmployeeAvailabilityDashboard = () => {
             </div>
           </div>
 
-          {/* Timeline Header */}
-          <div className="mb-4">
+                  {/* Timeline Header */}
+                  <div className="mb-4">
             <div className="flex">
               <div className="w-64 flex-shrink-0"></div>
               <div className="flex-1 relative h-8 bg-gray-50 rounded">
@@ -1499,16 +1763,15 @@ const EmployeeAvailabilityDashboard = () => {
                   >
                     <div className="w-px h-4 bg-gray-300 mx-auto mb-1"></div>
                     {ganttTimeframe === "week"
-                      ? label.date.toLocaleDateString("en-US", {
-                          month: "short",
+                      ? label.date.toLocaleDateString("fr-FR", {
                           day: "numeric",
+                          weekday: "short",
                         })
                       : ganttTimeframe === "month"
-                      ? label.date.toLocaleDateString("en-US", {
-                          month: "short",
+                      ? label.date.toLocaleDateString("fr-FR", {
                           day: "numeric",
                         })
-                      : label.date.toLocaleDateString("en-US", {
+                      : label.date.toLocaleDateString("fr-FR", {
                           month: "short",
                           year: "2-digit",
                         })}
@@ -1580,8 +1843,8 @@ const EmployeeAvailabilityDashboard = () => {
                       </button>
                     </div>
 
-                    {/* Collapsed View */}
-                    {!isExpanded && (
+                  {/* Collapsed View */}
+                  {!isExpanded && (
                       <div className="p-3">
                         <div className="flex">
                           <div className="w-64 flex-shrink-0"></div>
@@ -1681,6 +1944,95 @@ const EmployeeAvailabilityDashboard = () => {
                 <div className="w-4 h-4 bg-gray-400 rounded opacity-70"></div>
                 <span>Provisional</span>
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Statistics Panel */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <div className="flex items-center">
+              <Users className="h-8 w-8 text-blue-500 mr-3" />
+              <div>
+                <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
+                <div className="text-sm text-gray-600">Total Employees</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <div className="flex items-center">
+              <Calendar className="h-8 w-8 text-green-500 mr-3" />
+              <div>
+                <div className="text-2xl font-bold text-gray-900">{stats.available}</div>
+                <div className="text-sm text-gray-600">Available</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <div className="flex items-center">
+              <BarChart3 className="h-8 w-8 text-yellow-500 mr-3" />
+              <div>
+                <div className="text-2xl font-bold text-gray-900">{stats.partiallyBooked}</div>
+                <div className="text-sm text-gray-600">Partially Booked</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <div className="flex items-center">
+              <PieChart className="h-8 w-8 text-red-500 mr-3" />
+              <div>
+                <div className="text-2xl font-bold text-gray-900">{stats.fullyBooked}</div>
+                <div className="text-sm text-gray-600">Fully Booked</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Overall Utilization Summary */}
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Overall Team Utilization</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="text-center">
+              <div className="text-3xl font-bold text-blue-600 mb-2">
+                {stats.overallUtilizationRate.toFixed(1)}%
+              </div>
+              <div className="text-sm text-gray-600">Average Utilization Rate</div>
+            </div>
+            
+            <div className="text-center">
+              <div className="text-3xl font-bold text-green-600 mb-2">
+                {stats.totalChargeableHours.toFixed(0)}h
+              </div>
+              <div className="text-sm text-gray-600">Total Chargeable Hours</div>
+            </div>
+            
+            <div className="text-center">
+              <div className="text-3xl font-bold text-orange-600 mb-2">
+                {(stats.totalNetAvailableHours - stats.totalChargeableHours).toFixed(0)}h
+              </div>
+              <div className="text-sm text-gray-600">Available Capacity</div>
+            </div>
+          </div>
+          
+          {/* Utilization Progress Bar */}
+          <div className="mt-6">
+            <div className="flex justify-between text-sm text-gray-600 mb-2">
+              <span>Team Capacity Utilization</span>
+              <span>{stats.overallUtilizationRate.toFixed(1)}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-4">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-blue-600 h-4 rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(stats.overallUtilizationRate, 100)}%` }}
+              ></div>
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>0%</span>
+              <span>50%</span>
+              <span>100%</span>
             </div>
           </div>
         </div>
