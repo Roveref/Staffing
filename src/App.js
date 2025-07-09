@@ -24,6 +24,11 @@ const EmployeeAvailabilityDashboard = () => {
   const [expandedEmployees, setExpandedEmployees] = useState(new Set());
   const [ganttTimeframe, setGanttTimeframe] = useState("month");
   const [showUtilization, setShowUtilization] = useState(true);
+  const [customDateRange, setCustomDateRange] = useState({
+    enabled: false,
+    startDate: "",
+    endDate: ""
+  });
 
   const isPublicHoliday = (dateStr) => {
     // French public holidays (format: MM-DD)
@@ -60,6 +65,9 @@ const EmployeeAvailabilityDashboard = () => {
         return "loa";
       case "7777777777":
         return "pending";
+        case "10":
+          case "15":
+            return "absence";
       default:
         return jobNoStr.startsWith("2") ? "chargeable" : "other";
     }
@@ -184,10 +192,20 @@ const EmployeeAvailabilityDashboard = () => {
         // Prendre la première feuille ou chercher une feuille spécifique
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
+        
+        // Diagnostic: afficher des informations sur le fichier
+        console.log("Feuilles disponibles:", workbook.SheetNames);
+        console.log("Utilisation de la feuille:", sheetName);
+        
         const jsonData = XLSX.utils.sheet_to_json(worksheet, {
           header: 1,
           raw: false,
+          defval: "", // Valeur par défaut pour les cellules vides
         });
+
+        console.log("Nombre total de lignes lues:", jsonData.length);
+        console.log("Première ligne (header):", jsonData[0]);
+        console.log("Échantillon des 3 premières lignes de données:", jsonData.slice(1, 4));
 
         if (jsonData.length < 2) {
           throw new Error(
@@ -196,27 +214,43 @@ const EmployeeAvailabilityDashboard = () => {
         }
 
         processedData = jsonData
-          .slice(1)
-          .filter((row) => row.length > 0)
-          .map((row) => ({
-            empId: row[0] || "",
-            lastName: row[1] || "",
-            firstName: row[2] || "",
-            jobNo: row[3] || "",
-            jobName: row[4] || "",
-            startDate: row[5] || "",
-            endDate: row[6] || "",
-            utilization: parseFloat(row[7]) || 0,
-            status: row[8] || "",
-            hours: parseFloat(row[9]) || 0,
-            startDateParsed: row[10] || "",
-            endDateParsed: row[11] || "",
-            utilPercent: row[12] || "",
-            workingDays: parseFloat(row[13]) || 0,
-            hoursTotal: parseFloat(row[14]) || 0,
-            hoursPerDay: parseFloat(row[15]) || 0,
-            category: categorizeJob(row[3]),
-          }));
+          .slice(1) // Ignorer la ligne d'en-tête
+          .filter((row) => {
+            // Filtrer les lignes complètement vides ou avec seulement des empId vides
+            const hasData = row && (row[0] || row[1] || row[2] || row[3]);
+            if (!hasData) {
+              console.log("Ligne ignorée (vide):", row);
+            }
+            return hasData;
+          })
+          .map((row, index) => {
+            const record = {
+              empId: (row[0] || "").toString().trim(),
+              lastName: (row[1] || "").toString().trim(),
+              firstName: (row[2] || "").toString().trim(),
+              jobNo: (row[3] || "").toString().trim(),
+              jobName: (row[4] || "").toString().trim(),
+              startDate: (row[5] || "").toString().trim(),
+              endDate: (row[6] || "").toString().trim(),
+              utilization: parseFloat(row[7]) || 0,
+              status: (row[8] || "").toString().trim(),
+              hours: parseFloat(row[9]) || 0,
+              startDateParsed: (row[10] || "").toString().trim(),
+              endDateParsed: (row[11] || "").toString().trim(),
+              utilPercent: (row[12] || "").toString().trim(),
+              workingDays: parseFloat(row[13]) || 0,
+              hoursTotal: parseFloat(row[14]) || 0,
+              hoursPerDay: parseFloat(row[15]) || 0,
+              category: categorizeJob((row[3] || "").toString().trim()),
+            };
+            
+            // Diagnostic pour les premières lignes
+            if (index < 5) {
+              console.log(`Ligne ${index + 2} traitée:`, record);
+            }
+            
+            return record;
+          });
       }
 
       if (processedData.length === 0) {
@@ -240,6 +274,11 @@ const EmployeeAvailabilityDashboard = () => {
     setUploadError(null);
     setFileName("");
     setExpandedEmployees(new Set());
+    setCustomDateRange({
+      enabled: false,
+      startDate: "",
+      endDate: ""
+    });
   };
 
   const parseDate = (dateStr) => {
@@ -359,6 +398,15 @@ const EmployeeAvailabilityDashboard = () => {
   };
 
   const getTimelineRange = () => {
+    // Si une plage personnalisée est activée, l'utiliser
+    if (customDateRange.enabled && customDateRange.startDate && customDateRange.endDate) {
+      return {
+        startDate: new Date(customDateRange.startDate),
+        endDate: new Date(customDateRange.endDate)
+      };
+    }
+
+    // Sinon, utiliser la logique standard
     const today = new Date();
     const startDate = new Date(today);
     const endDate = new Date(today);
@@ -654,7 +702,79 @@ const EmployeeAvailabilityDashboard = () => {
                   </div>
                 </div>
               </div>
-              <div className="flex-1 relative h-6 bg-gray-100 rounded" style={{ marginRight: '24px' }}>                {/* Vertical grid lines for job timeline alignment */}
+              <div className="flex-1 relative h-8 bg-gray-100 rounded" style={{ marginRight: '24px' }}>
+                {/* Weekend background */}
+                {(() => {
+                  const weekendBars = [];
+                  const currentDate = new Date(timelineStart);
+                  const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                  const dayWidth = 100 / totalDays;
+                  
+                  while (currentDate <= timelineEnd) {
+                    const dayOfWeek = currentDate.getDay();
+                    if (dayOfWeek === 0 || dayOfWeek === 6) { // Sunday or Saturday
+                      const centerX = getPositionFromDate(
+                        currentDate.toISOString().split('T')[0],
+                        timelineStart,
+                        timelineEnd
+                      );
+                      
+                      weekendBars.push(
+                        <div
+                          key={`weekend-${currentDate.getTime()}`}
+                          className="absolute bg-gray-300 opacity-40"
+                          style={{
+                            left: `${centerX - dayWidth / 2}%`,
+                            top: "0%",
+                            width: `${dayWidth}%`,
+                            height: "100%",
+                            zIndex: 1,
+                          }}
+                        />
+                      );
+                    }
+                    currentDate.setDate(currentDate.getDate() + 1);
+                  }
+                  return weekendBars;
+                })()}
+                
+                {/* Public holidays background */}
+                {(() => {
+                  const holidayBars = [];
+                  const currentDate = new Date(timelineStart);
+                  const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                  const dayWidth = 100 / totalDays;
+                  
+                  while (currentDate <= timelineEnd) {
+                    const dateStr = currentDate.toISOString().split('T')[0];
+                    if (isPublicHoliday(dateStr)) {
+                      const centerX = getPositionFromDate(
+                        dateStr,
+                        timelineStart,
+                        timelineEnd
+                      );
+                      
+                      holidayBars.push(
+                        <div
+                          key={`holiday-${currentDate.getTime()}`}
+                          className="absolute bg-blue-200 opacity-60"
+                          style={{
+                            left: `${centerX - dayWidth / 2}%`,
+                            top: "0%",
+                            width: `${dayWidth}%`,
+                            height: "100%",
+                            zIndex: 2,
+                          }}
+                          title={`Public Holiday: ${dateStr}`}
+                        />
+                      );
+                    }
+                    currentDate.setDate(currentDate.getDate() + 1);
+                  }
+                  return holidayBars;
+                })()}
+
+                {/* Vertical grid lines for job timeline alignment */}
                 {getTimelineLabels().map((label, index) => (
                   <div
                     key={`job-grid-${idx}-${index}`}
@@ -663,36 +783,45 @@ const EmployeeAvailabilityDashboard = () => {
                       left: `${label.position}%`,
                       top: "0",
                       height: "100%",
-                      zIndex: 1,
+                      zIndex: 3,
                     }}
                   />
                 ))}
 
                 {consolidatedJob.periods.map((period, periodIdx) => {
+                  const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                  const dayWidth = 100 / totalDays;
+                  
                   const startPos = getPositionFromDate(
                     period.startDate,
                     timelineStart,
                     timelineEnd
                   );
+                  // Extend end date by one day to include the full last day
+                  const endDate = new Date(period.endDate);
+                  endDate.setDate(endDate.getDate() + 1);
                   const endPos = getPositionFromDate(
-                    period.endDate,
+                    endDate.toISOString().split('T')[0],
                     timelineStart,
                     timelineEnd
                   );
-                  const width = Math.max(1, endPos - startPos);
+                  
+                  // Align bars with grid lines
+                  const alignedStartPos = startPos;
+                  const width = Math.max(dayWidth * 0.8, endPos - startPos);
 
                   return (
                     <div
                       key={periodIdx}
-                      className={`absolute h-6 rounded text-xs text-white flex items-center justify-center ${getAssignmentColorByCategory(
+                      className={`absolute h-8 rounded text-xs text-white flex items-center justify-center ${getAssignmentColorByCategory(
                         consolidatedJob.category,
                         period.utilization
                       )}`}
                       style={{
-                        left: `${startPos}%`,
-                        width: `${width}%`,
+                        left: `calc(${alignedStartPos}% - 4px)`,
+                        width: `calc(${width}% - 1px)`,
                         opacity: period.status === "P" ? 0.7 : 0.9,
-                        zIndex: periodIdx + 1,
+                        zIndex: periodIdx + 4,
                       }}
                       title={`${period.startDate} to ${period.endDate} (${
                         period.hoursPerDay
@@ -719,228 +848,8 @@ const EmployeeAvailabilityDashboard = () => {
 
     return (
       <div className="p-3 space-y-3">
-       
-        {/* Available Capacity Summary */}
-        <div className="bg-green-50 p-3 rounded-lg relative">
-          <div className="flex items-center">
-            <div className="w-64 flex-shrink-0 pr-4">
-              <div className="text-sm">
-                <div className="font-medium text-green-800">
-                  Available Capacity
-                </div>
-                <div className="text-xs text-green-600 flex items-center gap-2 flex-wrap">
-                  <span>
-                    {timelineData.availableCapacityHours.toFixed(1)}h remaining
-                  </span>
-                  <span className="bg-green-100 text-green-800 px-2 py-1 rounded font-medium">
-                    {(100 - timelineData.utilizationRate).toFixed(1)}% free
-                  </span>
-                  <span className="bg-blue-100 text-blue-800 px-2 py-1 rounded font-medium">
-                    {timelineData.utilizationRate.toFixed(1)}% avg utilized
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="flex-1 relative h-8 bg-green-100 rounded border-2 border-green-200">
-              {/* Vertical grid lines */}
-              {getTimelineLabels().map((label, index) => (
-                <div
-                  key={`capacity-grid-${index}`}
-                  className="absolute w-px bg-white opacity-30"
-                  style={{
-                    left: `${label.position}%`,
-                    top: "0",
-                    height: "100%",
-                  }}
-                />
-              ))}
-
-              <div className="absolute inset-0 bg-green-200 rounded"></div>
-              <div
-                className="absolute h-8 rounded bg-blue-500 flex items-center justify-center"
-                style={{
-                  left: "0%",
-                  width: `${Math.min(
-                    (timelineData.chargeableHours /
-                      timelineData.netAvailableHours) *
-                      100,
-                    100
-                  )}%`,
-                }}
-              >
-                {timelineData.chargeableHours > 0 && (
-                  <span className="text-xs text-white font-medium">
-                    {timelineData.chargeableHours.toFixed(1)}h Chargeable
-                  </span>
-                )}
-              </div>
-              <div
-                className="absolute h-8 rounded bg-green-400 flex items-center justify-center"
-                style={{
-                  left: `${Math.min(
-                    (timelineData.chargeableHours /
-                      timelineData.netAvailableHours) *
-                      100,
-                    100
-                  )}%`,
-                  width: `${Math.max(
-                    0,
-                    (timelineData.availableCapacityHours /
-                      timelineData.netAvailableHours) *
-                      100
-                  )}%`,
-                }}
-              >
-                {timelineData.availableCapacityHours > 2 && (
-                  <span className="text-xs text-white font-medium">
-                    {(100 - timelineData.utilizationRate).toFixed(1)}% Free
-                  </span>
-                )}
-              </div>
-              {isOverAllocated && (
-                <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs px-1 py-0.5 rounded">
-                  Over-allocated ({timelineData.utilizationRate.toFixed(1)}%)
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-        
-{/* Daily Hours Detail Table */}
-<div className="bg-white border rounded-lg p-4 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="text-sm font-medium text-gray-900">
-                Daily Hours Detail
-              </div>
-              <div className="text-xs text-gray-600">
-                Day-by-day breakdown of hours
-              </div>
-            </div>
-            <div className="text-xs text-gray-500">
-              Working days only (excluding weekends and holidays)
-            </div>
-          </div>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-gray-200">
-                  <th className="text-left py-2 px-3 font-medium text-gray-700">Date</th>
-                  <th className="text-left py-2 px-3 font-medium text-gray-700">Day</th>
-                  <th className="text-right py-2 px-3 font-medium text-gray-700">Available</th>
-                  <th className="text-right py-2 px-3 font-medium text-gray-700">Absence</th>
-                  <th className="text-right py-2 px-3 font-medium text-gray-700">Chargeable</th>
-                  <th className="text-right py-2 px-3 font-medium text-gray-700">Net Available</th>
-                  <th className="text-right py-2 px-3 font-medium text-gray-700">Remaining</th>
-                  <th className="text-right py-2 px-3 font-medium text-gray-700">Utilization</th>
-                </tr>
-              </thead>
-              <tbody>
-                {timelineData.dailyUtilization && timelineData.dailyUtilization.map((day, index) => {
-                  const date = new Date(day.date);
-                  const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-                  const isHoliday = isPublicHoliday(day.date);
-                  
-                  // Skip weekends and holidays
-                  if (isWeekend || isHoliday) return null;
-                  
-                  const baseAvailable = 8; // 8 hours per working day
-                  const remaining = day.availableCapacityHours;
-                  
-                  return (
-                    <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
-                      <td className="py-2 px-3 text-gray-900 font-medium">
-                        {date.toLocaleDateString('fr-FR', { 
-                          day: '2-digit', 
-                          month: '2-digit' 
-                        })}
-                      </td>
-                      <td className="py-2 px-3 text-gray-600">
-                        {date.toLocaleDateString('fr-FR', { 
-                          weekday: 'short' 
-                        })}
-                      </td>
-                      <td className="py-2 px-3 text-right text-gray-700">
-                        {baseAvailable.toFixed(1)}h
-                      </td>
-                      <td className="py-2 px-3 text-right text-red-600">
-                        {day.absenceHours.toFixed(1)}h
-                      </td>
-                      <td className="py-2 px-3 text-right text-blue-600">
-                        {day.chargeableHours.toFixed(1)}h
-                      </td>
-                      <td className="py-2 px-3 text-right text-gray-700 font-medium">
-                        {day.netAvailableHours.toFixed(1)}h
-                      </td>
-                      <td className={`py-2 px-3 text-right font-medium ${
-                        remaining > 0 ? 'text-green-600' : 
-                        remaining === 0 ? 'text-gray-600' : 'text-red-600'
-                      }`}>
-                        {remaining.toFixed(1)}h
-                      </td>
-                      <td className={`py-2 px-3 text-right font-medium ${
-                        day.utilizationRate > 100 ? 'text-red-600' :
-                        day.utilizationRate > 75 ? 'text-orange-600' :
-                        day.utilizationRate > 50 ? 'text-yellow-600' :
-                        day.utilizationRate > 0 ? 'text-blue-600' : 'text-green-600'
-                      }`}>
-                        {day.utilizationRate.toFixed(1)}%
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          
-          {/* Summary row */}
-          <div className="mt-3 pt-3 border-t border-gray-200">
-            <div className="flex justify-between items-center text-sm">
-              <div className="text-gray-700">
-                <span className="font-medium">Period Summary:</span> 
-                <span className="ml-2">
-                  {timelineData.dailyUtilization ? 
-                    timelineData.dailyUtilization.filter(day => {
-                      const date = new Date(day.date);
-                      const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-                      const isHoliday = isPublicHoliday(day.date);
-                      return !isWeekend && !isHoliday;
-                    }).length : 0
-                  } working days
-                </span>
-              </div>
-              <div className="flex items-center gap-6">
-                <div className="text-blue-600">
-                  <span className="font-medium">
-                    {timelineData.chargeableHours.toFixed(1)}h
-                  </span>
-                  <span className="text-gray-600 ml-1">chargeable</span>
-                </div>
-                <div className="text-red-600">
-                  <span className="font-medium">
-                    {timelineData.absenceHours.toFixed(1)}h
-                  </span>
-                  <span className="text-gray-600 ml-1">absence</span>
-                </div>
-                <div className="text-green-600">
-                  <span className="font-medium">
-                    {timelineData.availableCapacityHours.toFixed(1)}h
-                  </span>
-                  <span className="text-gray-600 ml-1">available</span>
-                </div>
-                <div className={`font-medium ${
-                  timelineData.utilizationRate > 100 ? 'text-red-600' :
-                  timelineData.utilizationRate > 75 ? 'text-orange-600' :
-                  'text-blue-600'
-                }`}>
-                  {timelineData.utilizationRate.toFixed(1)}% avg utilization
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
+      
+      
 
  {/* Daily Utilization Variation Chart */}
  <div className="bg-gray-50 p-6 rounded-lg relative mb-6">
@@ -960,27 +869,42 @@ const EmployeeAvailabilityDashboard = () => {
                   const { startDate, endDate } = getTimelineRange();
                   const monthLabels = [];
                   
-                  // Generate month labels
+                  // Generate month labels with precise alignment
                   const currentMonth = new Date(startDate);
                   currentMonth.setDate(1); // Start of month
                   
                   while (currentMonth <= endDate) {
                     const monthStart = new Date(currentMonth);
-                    const monthEnd = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
-                    const displayEnd = monthEnd > endDate ? endDate : monthEnd;
                     
-                    const startPos = getPositionFromDate(monthStart, startDate, endDate);
-                    const endPos = getPositionFromDate(displayEnd, startDate, endDate);
+                    // Calculate start position and adjust to align with grid
+                    let startPos = getPositionFromDate(monthStart, startDate, endDate);
+                    
+                    // Adjust start position to align with grid lines (similar to the bars)
+                    const totalDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                    const dayWidth = 100 / totalDays;
+                    
+                    // Calculate end position - use start of NEXT month
+                    const nextMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
+                    let endPos;
+                    
+                    if (nextMonth > endDate) {
+                      // Last month - extend to end of timeline
+                      endPos = 100;
+                    } else {
+                      // Use start of next month as end position
+                      endPos = getPositionFromDate(nextMonth, startDate, endDate);
+                    }
+                    
                     const width = endPos - startPos;
                     
-                    if (width > 8) { // Only show if month section is wide enough
+                    if (width > 2) {
                       monthLabels.push(
                         <div
                           key={`month-${currentMonth.getTime()}`}
                           className="absolute bg-blue-50 text-blue-700 text-base font-medium border-l border-blue-300"
                           style={{
-                            left: `${startPos}%`,
-                            width: `${width}%`,
+                            left: `calc(${startPos}% - 4px)`, // Slight adjustment to align with grid
+                            width: `calc(${width}% + 4px)`, // Compensate width
                             top: '0px',
                             height: '32px',
                             fontSize: '14px',
@@ -1494,33 +1418,7 @@ const EmployeeAvailabilityDashboard = () => {
           </div>
           </div>
 
-         {/* Legend for curve */}
-         <div className="flex items-center gap-6 text-sm text-gray-600 ml-72">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-gray-400 rounded-full"></div>
-              <span>Unavailable</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-green-500 rounded-full"></div>
-              <span>0%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
-              <span>1-49%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
-              <span>50-74%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-orange-500 rounded-full"></div>
-              <span>75-99%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-red-500 rounded-full"></div>
-              <span>100%+</span>
-            </div>
-          </div>
+        
         </div>
 
         <div className="border-t border-gray-200"></div>
@@ -1708,15 +1606,56 @@ const EmployeeAvailabilityDashboard = () => {
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600">Timeframe:</span>
                 <select
-                  value={ganttTimeframe}
-                  onChange={(e) => setGanttTimeframe(e.target.value)}
+                  value={customDateRange.enabled ? "custom" : ganttTimeframe}
+                  onChange={(e) => {
+                    if (e.target.value === "custom") {
+                      setCustomDateRange({
+                        ...customDateRange,
+                        enabled: true
+                      });
+                    } else {
+                      setCustomDateRange({
+                        enabled: false,
+                        startDate: "",
+                        endDate: ""
+                      });
+                      setGanttTimeframe(e.target.value);
+                    }
+                  }}
                   className="px-3 py-1 border border-gray-300 rounded-md text-sm"
                 >
                   <option value="week">4 Weeks</option>
                   <option value="month">3 Months</option>
                   <option value="quarter">9 Months</option>
+                  <option value="custom">Custom Range</option>
                 </select>
               </div>
+
+              {/* Custom Date Range Inputs */}
+              {customDateRange.enabled && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">From:</span>
+                  <input
+                    type="date"
+                    value={customDateRange.startDate}
+                    onChange={(e) => setCustomDateRange({
+                      ...customDateRange,
+                      startDate: e.target.value
+                    })}
+                    className="px-2 py-1 border border-gray-300 rounded text-sm"
+                  />
+                  <span className="text-sm text-gray-600">To:</span>
+                  <input
+                    type="date"
+                    value={customDateRange.endDate}
+                    onChange={(e) => setCustomDateRange({
+                      ...customDateRange,
+                      endDate: e.target.value
+                    })}
+                    className="px-2 py-1 border border-gray-300 rounded text-sm"
+                  />
+                </div>
+              )}
 
               <button
                 onClick={() => setShowUtilization(!showUtilization)}
@@ -1750,41 +1689,12 @@ const EmployeeAvailabilityDashboard = () => {
             </div>
           </div>
 
-                  {/* Timeline Header */}
-                  <div className="mb-4">
-            <div className="flex">
-              <div className="w-64 flex-shrink-0"></div>
-              <div className="flex-1 relative h-8 bg-gray-50 rounded">
-                {getTimelineLabels().map((label, index) => (
-                  <div
-                    key={index}
-                    className="absolute transform -translate-x-1/2 text-xs text-gray-500"
-                    style={{ left: `${label.position}%` }}
-                  >
-                    <div className="w-px h-4 bg-gray-300 mx-auto mb-1"></div>
-                    {ganttTimeframe === "week"
-                      ? label.date.toLocaleDateString("fr-FR", {
-                          day: "numeric",
-                          weekday: "short",
-                        })
-                      : ganttTimeframe === "month"
-                      ? label.date.toLocaleDateString("fr-FR", {
-                          day: "numeric",
-                        })
-                      : label.date.toLocaleDateString("fr-FR", {
-                          month: "short",
-                          year: "2-digit",
-                        })}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+                 
 
           {/* Employee Rows */}
           <div className="space-y-1">
             {getEnhancedGanttData()
-              .slice(0, 25)
+              .slice(0, 150)
               .map((employee) => {
                 const isExpanded = expandedEmployees.has(employee.empId);
                 const { startDate: timelineStart, endDate: timelineEnd } =
@@ -1846,56 +1756,194 @@ const EmployeeAvailabilityDashboard = () => {
                   {/* Collapsed View */}
                   {!isExpanded && (
                       <div className="p-3">
-                        <div className="flex">
-                          <div className="w-64 flex-shrink-0"></div>
-                          <div className="flex-1 relative h-8 bg-gray-100 rounded">
-                            {employee.assignments.map((assignment, idx) => {
+            <div className="flex items-center ml-2 mb-1">
+                        <div className="w-60 flex-shrink-0 pr-4"></div>
+                          <div className="flex-1 relative">
+                            {/* Month references */}
+                            <div className="relative h-8 mb-3" style={{ marginRight: '24px' }}>
+                              {(() => {
+                                const { startDate, endDate } = getTimelineRange();
+                                const monthLabels = [];
+                                
+                                // Generate month labels with precise alignment
+                                const currentMonth = new Date(startDate);
+                                currentMonth.setDate(1); // Start of month
+                                
+                                while (currentMonth <= endDate) {
+                                  const monthStart = new Date(currentMonth);
+                                  
+                                  // Calculate start position and adjust to align with grid
+                                  let startPos = getPositionFromDate(monthStart, startDate, endDate);
+                                  
+                                  // Adjust start position to align with grid lines (similar to the bars)
+                                  const totalDays = (endDate - startDate) / (1000 * 60 * 60 * 24);
+                                  const dayWidth = 100 / totalDays;
+                                  
+                                  // Calculate end position - use start of NEXT month
+                                  const nextMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 1);
+                                  let endPos;
+                                  
+                                  if (nextMonth > endDate) {
+                                    // Last month - extend to end of timeline
+                                    endPos = 100;
+                                  } else {
+                                    // Use start of next month as end position
+                                    endPos = getPositionFromDate(nextMonth, startDate, endDate);
+                                  }
+                                  
+                                  const width = endPos - startPos;
+                                  
+                                  if (width > 2) {
+                                    monthLabels.push(
+                                      <div
+                                        key={`month-${currentMonth.getTime()}`}
+                                        className="absolute bg-blue-50 text-blue-700 text-base font-medium border-l border-blue-300"
+                                        style={{
+                                          left: `calc(${startPos}% - 4px)`, // Slight adjustment to align with grid
+                                          width: `calc(${width}% + 4px)`, // Compensate width
+                                          top: '0px',
+                                          height: '32px',
+                                          fontSize: '14px',
+                                          paddingLeft: '8px',
+                                          paddingTop: '4px'
+                                        }}
+                                      >
+                                        {currentMonth.toLocaleDateString('fr-FR', { 
+                                          month: 'short', 
+                                          year: ganttTimeframe === 'quarter' ? '2-digit' : undefined 
+                                        })}
+                                      </div>
+                                    );
+                                  }
+                                  
+                                  currentMonth.setMonth(currentMonth.getMonth() + 1);
+                                }
+                                
+                                return monthLabels;
+                              })()}
+                            </div>
+                          <div className="flex-1 relative h-8 bg-gray-100 rounded" style={{ marginRight: '24px' }}>
+                            {/* Weekend background */}
+                            {(() => {
+                              const weekendBars = [];
+                              const currentDate = new Date(timelineStart);
+                              const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                              const dayWidth = 100 / totalDays;
+                              
+                              while (currentDate <= timelineEnd) {
+                                const dayOfWeek = currentDate.getDay();
+                                if (dayOfWeek === 0 || dayOfWeek === 6) { // Sunday or Saturday
+                                  const centerX = getPositionFromDate(
+                                    currentDate.toISOString().split('T')[0],
+                                    timelineStart,
+                                    timelineEnd
+                                  );
+                                  
+                                  weekendBars.push(
+                                    <div
+                                      key={`weekend-${currentDate.getTime()}`}
+                                      className="absolute bg-gray-300 opacity-40"
+                                      style={{
+                                        left: `${centerX - dayWidth / 2}%`,
+                                        top: "0%",
+                                        width: `${dayWidth}%`,
+                                        height: "100%",
+                                        zIndex: 1,
+                                      }}
+                                    />
+                                  );
+                                }
+                                currentDate.setDate(currentDate.getDate() + 1);
+                              }
+                              return weekendBars;
+                            })()}
+                            
+                            {/* Public holidays background */}
+                            {(() => {
+                              const holidayBars = [];
+                              const currentDate = new Date(timelineStart);
+                              const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                              const dayWidth = 100 / totalDays;
+                              
+                              while (currentDate <= timelineEnd) {
+                                const dateStr = currentDate.toISOString().split('T')[0];
+                                if (isPublicHoliday(dateStr)) {
+                                  const centerX = getPositionFromDate(
+                                    dateStr,
+                                    timelineStart,
+                                    timelineEnd
+                                  );
+                                  
+                                  holidayBars.push(
+                                    <div
+                                      key={`holiday-${currentDate.getTime()}`}
+                                      className="absolute bg-blue-200 opacity-60"
+                                      style={{
+                                        left: `${centerX - dayWidth / 2}%`,
+                                        top: "0%",
+                                        width: `${dayWidth}%`,
+                                        height: "100%",
+                                        zIndex: 1,
+                                      }}
+                                      title={`Public Holiday: ${dateStr}`}
+                                    />
+                                  );
+                                }
+                                currentDate.setDate(currentDate.getDate() + 1);
+                              }
+                              return holidayBars;
+                            })()}
+                          {consolidateAssignments(employee.assignments).map((consolidatedJob, idx) => {
+                            // For each consolidated job, render all its periods
+                            return consolidatedJob.periods.map((period, periodIdx) => {
+                              const totalDays = (timelineEnd - timelineStart) / (1000 * 60 * 60 * 24);
+                              const dayWidth = 100 / totalDays;
+                              
                               const startPos = getPositionFromDate(
-                                assignment.startDate,
+                                period.startDate,
                                 timelineStart,
                                 timelineEnd
                               );
+                              // Extend end date by one day to include the full last day
+                              const endDate = new Date(period.endDate);
+                              endDate.setDate(endDate.getDate() + 1);
                               const endPos = getPositionFromDate(
-                                assignment.endDate,
+                                endDate.toISOString().split('T')[0],
                                 timelineStart,
                                 timelineEnd
                               );
-                              const width = Math.max(1, endPos - startPos);
+                              
+                              // Align bars with grid lines
+                              const alignedStartPos = startPos;
+                              const width = Math.max(dayWidth * 0.8, endPos - startPos);
 
                               return (
                                 <div
-                                  key={idx}
-                                  className={`absolute h-6 top-1 rounded text-xs text-white flex items-center justify-center ${getAssignmentColorByCategory(
-                                    assignment.category,
-                                    assignment.utilization
+                                  key={`${idx}-${periodIdx}`}
+                                  className={`absolute h-8 rounded text-xs text-white flex items-center justify-center ${getAssignmentColorByCategory(
+                                    consolidatedJob.category,
+                                    period.utilization
                                   )}`}
                                   style={{
-                                    left: `${startPos}%`,
-                                    width: `${width}%`,
-                                    opacity:
-                                      assignment.status === "P" ? 0.7 : 0.9,
+                                    left: `calc(${alignedStartPos}% - 4px)`,
+                                    width: `calc(${width}% - 1px)`,
+                                    opacity: period.status === "P" ? 0.7 : 0.9,
+                                    zIndex: idx + periodIdx + 1,
                                   }}
-                                  title={`${
-                                    assignment.jobName
-                                  } (${assignment.hoursPerDay.toFixed(
-                                    1
-                                  )}h/day) - ${getCategoryLabel(
-                                    assignment.category
-                                  )}`}
+                                  title={`${consolidatedJob.jobName} (${period.hoursPerDay.toFixed(1)}h/day) - ${getCategoryLabel(consolidatedJob.category)}`}
                                 >
                                   {width > 5 && (
                                     <span className="truncate px-1">
-                                      {assignment.jobName.substring(
-                                        0,
-                                        Math.floor(width / 2)
-                                      )}
+                                      {consolidatedJob.jobName.substring(0, Math.floor(width / 2))}
                                     </span>
                                   )}
                                 </div>
                               );
-                            })}
+                            });
+                          })}
                           </div>
                         </div>
+                      </div>
                       </div>
                     )}
 
@@ -1905,137 +1953,9 @@ const EmployeeAvailabilityDashboard = () => {
                 );
               })}
           </div>
-
-          {/* Legend */}
-          <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-            <h4 className="text-sm font-medium text-gray-900 mb-3">
-              Legend by Category
-            </h4>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-blue-500 rounded"></div>
-                <span>Chargeable</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-red-500 rounded"></div>
-                <span>Absence/Holidays</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-green-500 rounded"></div>
-                <span>Training</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-purple-500 rounded"></div>
-                <span>LOA</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-yellow-500 rounded"></div>
-                <span>Pending jobcode</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-gray-500 rounded"></div>
-                <span>Reservation w/o jobcode</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-orange-500 rounded"></div>
-                <span>Other</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-4 h-4 bg-gray-400 rounded opacity-70"></div>
-                <span>Provisional</span>
-              </div>
-            </div>
-          </div>
         </div>
 
-        {/* Statistics Panel */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <div className="flex items-center">
-              <Users className="h-8 w-8 text-blue-500 mr-3" />
-              <div>
-                <div className="text-2xl font-bold text-gray-900">{stats.total}</div>
-                <div className="text-sm text-gray-600">Total Employees</div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <div className="flex items-center">
-              <Calendar className="h-8 w-8 text-green-500 mr-3" />
-              <div>
-                <div className="text-2xl font-bold text-gray-900">{stats.available}</div>
-                <div className="text-sm text-gray-600">Available</div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <div className="flex items-center">
-              <BarChart3 className="h-8 w-8 text-yellow-500 mr-3" />
-              <div>
-                <div className="text-2xl font-bold text-gray-900">{stats.partiallyBooked}</div>
-                <div className="text-sm text-gray-600">Partially Booked</div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white p-4 rounded-lg shadow-sm">
-            <div className="flex items-center">
-              <PieChart className="h-8 w-8 text-red-500 mr-3" />
-              <div>
-                <div className="text-2xl font-bold text-gray-900">{stats.fullyBooked}</div>
-                <div className="text-sm text-gray-600">Fully Booked</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Overall Utilization Summary */}
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Overall Team Utilization</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="text-center">
-              <div className="text-3xl font-bold text-blue-600 mb-2">
-                {stats.overallUtilizationRate.toFixed(1)}%
-              </div>
-              <div className="text-sm text-gray-600">Average Utilization Rate</div>
-            </div>
-            
-            <div className="text-center">
-              <div className="text-3xl font-bold text-green-600 mb-2">
-                {stats.totalChargeableHours.toFixed(0)}h
-              </div>
-              <div className="text-sm text-gray-600">Total Chargeable Hours</div>
-            </div>
-            
-            <div className="text-center">
-              <div className="text-3xl font-bold text-orange-600 mb-2">
-                {(stats.totalNetAvailableHours - stats.totalChargeableHours).toFixed(0)}h
-              </div>
-              <div className="text-sm text-gray-600">Available Capacity</div>
-            </div>
-          </div>
-          
-          {/* Utilization Progress Bar */}
-          <div className="mt-6">
-            <div className="flex justify-between text-sm text-gray-600 mb-2">
-              <span>Team Capacity Utilization</span>
-              <span>{stats.overallUtilizationRate.toFixed(1)}%</span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-4">
-              <div
-                className="bg-gradient-to-r from-blue-500 to-blue-600 h-4 rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(stats.overallUtilizationRate, 100)}%` }}
-              ></div>
-            </div>
-            <div className="flex justify-between text-xs text-gray-500 mt-1">
-              <span>0%</span>
-              <span>50%</span>
-              <span>100%</span>
-            </div>
-          </div>
-        </div>
+        
       </div>
     </div>
   );
